@@ -15,6 +15,7 @@ void PaceGuide::begin(const BMSData& bms) {
     fill_solid(_leds, PACE_NUM_LEDS, CRGB::Black);
     FastLED.show();
 
+    _raceStartMs = millis(); // initialise before reset() so elapsed time is valid
     reset(bms);
 
     Serial.print("[PaceGuide] Init OK. Energy budget: ");
@@ -39,6 +40,7 @@ void PaceGuide::reset(const BMSData& bms) {
     _ledLevel        = 0;
     _lastUpdateMs    = millis();
     _lastLedUpdateMs = millis();
+    _raceStartMs     = millis(); // start elapsed-time clock for power-target ratio
 
     fill_solid(_leds, PACE_NUM_LEDS, CRGB::Black);
     FastLED.show();
@@ -102,26 +104,25 @@ void PaceGuide::update(const BMSData& bms, const MotorControllerData& mc) {
     _cumEnergyJ   += powerW * dtS;
 
     // ── 3. Compute pace ratio ─────────────────────────────────────────────────
-    // ratio = (energy_remaining_fraction) / (distance_remaining_fraction)
+    // ratio = target_energy_so_far / actual_energy_so_far
     //
-    // ratio > 1.0 → more energy left relative to distance → surplus → push
+    // target_energy = _targetPowerW × elapsed_seconds
+    //   (i.e. how many joules a perfectly-paced car would have spent by now)
+    //
+    // ratio > 1.0 → spending LESS than target rate → energy surplus → push harder
     // ratio = 1.0 → exactly on pace
-    // ratio < 1.0 → less energy left relative to distance → deficit → slow down
+    // ratio < 1.0 → spending MORE than target rate → energy deficit → slow down
     //
-    // Only compute once we've moved at least 1 m to avoid divide-by-zero
-    // and nonsense readings on the start line.
-    if (_cumDistM > 1.0f && _totalEnergyJ > 0.0f) {
-        float energyRemaining   = _totalEnergyJ - _cumEnergyJ;
-        float distRemaining     = PACE_TOTAL_DISTANCE_M - _cumDistM;
+    // This approach only requires a clock — no GPS or wheel speed needed for
+    // the pace judgement itself. Distance integration is still logged for
+    // reference. We guard on _cumEnergyJ > 0 to avoid divide-by-zero at
+    // the very start of the run.
+    float elapsedS = (nowMs - _raceStartMs) / 1000.0f;
 
-        // Guard: if we've somehow overrun distance or energy, clamp to 0
-        energyRemaining = fmaxf(energyRemaining, 0.0f);
-        distRemaining   = fmaxf(distRemaining,   1.0f); // avoid div/0 at finish
+    if (_cumEnergyJ > 0.0f && elapsedS > 1.0f) {
+        float targetEnergy = _targetPowerW * elapsedS;
 
-        float energyFraction  = energyRemaining  / _totalEnergyJ;
-        float distFraction    = distRemaining     / PACE_TOTAL_DISTANCE_M;
-
-        _ratioRaw = energyFraction / distFraction;
+        _ratioRaw = targetEnergy / _cumEnergyJ;
 
         // ── 4. Exponential moving average smoothing ───────────────────────────
         // Prevents LED flickering from current spikes, regen, and throttle blips.
@@ -170,8 +171,9 @@ float PaceGuide::erpmToSpeedMs(int32_t erpmRaw) const {
 //    LEDs 12–15  blue    surplus           (push harder)
 // -----------------------------------------------------------------------------
 int PaceGuide::ratioToLedLevel(float ratio) const {
-    // Before race start (no distance yet) — show nothing
-    if (_cumDistM <= 1.0f) return 0;
+    // Before race start (insufficient elapsed time) — show nothing
+    float elapsedS = (millis() - _raceStartMs) / 1000.0f;
+    if (elapsedS <= 1.0f || _cumEnergyJ <= 0.0f) return 0;
 
     // Deficit side: fewer LEDs = more urgent to slow down
     if (ratio <= PACE_DEFICIT_CRITICAL)  return 1;   // 1 orange  — critical
