@@ -78,6 +78,13 @@
 //                if LEDs flicker too much increase toward 0.95.
 #define PACE_EMA_ALPHA          0.9f
 
+// ── Preset power target ───────────────────────────────────────────────────
+// Average power draw that keeps the car on pace for the full endurance run.
+// Derived from: 22 MJ budget ÷ ~1800 s typical run time ≈ 12.2 kW.
+// Tuned to 12 kW as agreed with team lead (2025-06-05).
+// Override at runtime with paceGuide.setTargetPower(watts) — no recompile needed.
+#define PACE_TARGET_POWER_W     12000.0f    // watts — 12 kW average target
+
 // ── Ratio → LED thresholds ────────────────────────────────────────────────────
 // ratio = (energy_remaining_fraction) / (distance_remaining_fraction)
 // ratio > 1.0 = surplus energy  → push harder  → more LEDs lit (into blue)
@@ -125,9 +132,15 @@ public:
     // Populate a PaceGuideData struct for datalogging — call after update()
     void updateData(PaceGuideData& data) const;
 
+    // Override the average power target at runtime (default: PACE_TARGET_POWER_W).
+    // Call from setup() or when the team wants to try a different pace — no
+    // recompile needed. e.g. paceGuide.setTargetPower(11500.0f);
+    void setTargetPower(float watts) { _targetPowerW = watts; }
+
 private:
     // ── State ─────────────────────────────────────────────────────────────────
     float    _totalEnergyJ    = PACE_FULL_CHARGE_J; // set from SOC at begin/reset
+    float    _targetPowerW    = PACE_TARGET_POWER_W; // average W to stay on pace
     float    _cumDistM        = 0.0f;               // metres driven so far
     float    _cumEnergyJ      = 0.0f;               // joules spent so far
     float    _ratioRaw        = 1.0f;               // unsmoothed ratio
@@ -136,6 +149,7 @@ private:
     bool     _canStale        = false;              // true when magenta is flashing
     uint32_t _lastUpdateMs    = 0;                  // last integration timestamp
     uint32_t _lastLedUpdateMs = 0;                  // last LED push timestamp
+    uint32_t _raceStartMs     = 0;                  // set at reset(), used for elapsed time in ratio
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
